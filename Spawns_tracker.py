@@ -18,18 +18,18 @@ POKENAME_BOT_ID = 874910942490677270
 DEVELOPER_IDS = [1378954077462986772]  # Only you can use .reset
 
 # Custom emojis (replace with your actual emoji IDs)
-EMOJI_SHIELD = "<:black_def:1515635832382554267>"
-EMOJI_WARNING = "<a:4a:1515635614928601141>"
-EMOJI_TROPHY = "<a:trophy:1515636001234567890>"
-EMOJI_CHART = "<:chart:1515636123456789012>"
-EMOJI_RESET = "<:reset:1515636223456789012>"
+EMOJI_SHIELD = "<:Role_Admin_White:1490432406988132352>"
+EMOJI_WARNING = "<:IMG_20260616_005310:1516161318166593718>"
+EMOJI_TROPHY = "<:952396trophie:1516160170756145293>"
+EMOJI_CHART = "<:1423statistics:1516152761786302665>"
+EMOJI_RESET = "<:87929developerglow:1516154803028361256>"
 EMOJI_TIME = "<:79071_starrymoon:1515635746008989826>"
-EMOJI_LIVE = "<a:live:1515636301234567890>"
+EMOJI_LIVE = "<:emoji_1738170667573:1492147995741786122>"
 
 # Medal emojis (replace with your actual emoji IDs)
-MEDAL_1ST = "<a:1st_place:1515636001234567890>"
-MEDAL_2ND = "<a:2nd_place:1515636001234567891>"
-MEDAL_3RD = "<a:3rd_place:1515636001234567892>"
+MEDAL_1ST = "<a:76245medalla:1516152753750282270>"
+MEDAL_2ND = "<a:78330medalsilver:1516152758523396288>"
+MEDAL_3RD = "<a:720660medalbronze:1516152756325454036>"
 
 # Store live leaderboard messages for editing
 live_messages = {}
@@ -103,7 +103,7 @@ def record_spawn(guild_id, guild_name, pokemon_name):
         data["global"]["started"] = datetime.now().isoformat()
     
     save_data(data)
-    print(f"📊 [{guild_name}] Recorded spawn: {pokemon} (#{server['total_spawns']})")
+    print(f"[{guild_name}] Recorded spawn: {pokemon} (#{server['total_spawns']})")
     
     # Trigger live leaderboard updates
     asyncio.create_task(update_live_leaderboards(guild_id))
@@ -162,7 +162,7 @@ def create_leaderboard_embed(server, top_list):
     )
     
     if not top_list:
-        embed.add_field(name="📊", value="No spawns recorded yet.", inline=False)
+        embed.add_field(name=f"{EMOJI_CHART}", value="No spawns recorded yet.", inline=False)
     else:
         for i, (name, count) in enumerate(top_list, 1):
             if i == 1:
@@ -183,7 +183,7 @@ def create_leaderboard_embed(server, top_list):
     if server.get("last_spawn"):
         last = datetime.fromisoformat(server["last_spawn"])
         embed.set_footer(
-            text=f"🔄 Updates every 10s | Last spawn: {last.strftime('%H:%M:%S')}",
+            text=f" Updates every 10s | Last spawn: {last.strftime('%H:%M:%S')}",
             icon_url=bot.user.display_avatar.url
         )
     else:
@@ -404,13 +404,13 @@ async def global_stats(ctx):
     started = data["global"].get("started")
     
     embed = discord.Embed(
-        title="🌍 Global Spawn Statistics",
+        title=" __Global Spawn Statistics__ ",
         color=0x2C2C2C,
         timestamp=datetime.now()
     )
     
-    embed.add_field(name="📊 Total Spawns", value=f"**{total}**", inline=True)
-    embed.add_field(name="🖥️ Servers Tracked", value=f"**{len(data['servers'])}**", inline=True)
+    embed.add_field(name=f"{EMOJI_CHART}Total Spawns", value=f"**{total}**", inline=True)
+    embed.add_field(name=" Servers Tracked", value=f"**{len(data['servers'])}**", inline=True)
     
     if started:
         start_dt = datetime.fromisoformat(started)
