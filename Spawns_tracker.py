@@ -1,13 +1,25 @@
 import discord
 from discord.ext import commands, tasks
+from discord.gateway import DiscordWebSocket
 import os
 import json
 import re
 import asyncio
-import time  # <-- added for timestamps
+import time
 from datetime import datetime
 from huggingface_hub import HfApi, hf_hub_download
 import shutil
+
+# --- CUSTOM WEBSOCKET WITH RATELIMIT BYPASS ---
+class CustomDiscordWebSocket(DiscordWebSocket):
+    def is_ratelimited(self):
+        # Bypass client-side gateway ratelimiting
+        return False
+
+class CustomBot(commands.Bot):
+    async def _get_websocket(self, *args, **kwargs):
+        # Use our custom websocket class
+        return await CustomDiscordWebSocket.from_client(self, *args, **kwargs)
 
 # --- CONFIGURATION ---
 DATASET_REPO = "DiscordBOTNHIHUN/P2AURA-FARMER"
@@ -19,7 +31,10 @@ POKENAME_BOT_ID = 874910942490677270
 DEVELOPER_IDS = [1378954077462986772]  # Only you can use .reset
 
 # Cooldown per channel to avoid duplicate recordings from multiple naming bots
-COOLDOWN_SECONDS = 3   # adjust as needed
+COOLDOWN_SECONDS = 3
+
+# Live leaderboard update cooldown (prevents REST API 429s)
+LIVE_UPDATE_COOLDOWN = 15  # seconds between edits per channel
 
 # Custom emojis (replace with your actual emoji IDs)
 EMOJI_SHIELD = "<:Role_Admin_White:1490432406988132352>"
@@ -40,6 +55,9 @@ live_messages = {}
 
 # Per-channel cooldown tracking: (guild_id, channel_id) -> {pokemon_name: timestamp}
 last_spawn_per_channel = {}
+
+# Per-channel live update cooldown tracking
+last_live_update = {}
 
 # --- HF functions ---
 hf_api = HfApi()
@@ -112,7 +130,7 @@ def record_spawn(guild_id, guild_name, pokemon_name):
     save_data(data)
     print(f"[{guild_name}] Recorded spawn: {pokemon} (#{server['total_spawns']})")
     
-    # Trigger live leaderboard updates
+    # Trigger live leaderboard updates (respects cooldown)
     asyncio.create_task(update_live_leaderboards(guild_id))
     
     return server
@@ -141,23 +159,34 @@ def extract_pokemon_name(text):
     return None
 
 async def update_live_leaderboards(guild_id):
-    """Update all live leaderboard messages for a guild."""
+    """Update all live leaderboard messages for a guild (respects cooldown)."""
     if guild_id not in live_messages:
         return
     
+    current_time = time.time()
     data, server = get_server_data(guild_id, "")
     top_list = get_top_10(server)
-    
     embed = create_leaderboard_embed(server, top_list)
     
     for channel_id, message_id in live_messages[guild_id].items():
+        # Respect per-channel cooldown to avoid 429s
+        last_update = last_live_update.get(channel_id, 0)
+        if current_time - last_update < LIVE_UPDATE_COOLDOWN:
+            continue
+        
         try:
             channel = bot.get_channel(channel_id)
             if channel:
                 msg = await channel.fetch_message(message_id)
                 await msg.edit(embed=embed)
+                last_live_update[channel_id] = current_time
+        except discord.errors.HTTPException as e:
+            if e.status == 429:
+                print(f"⏱️ Rate limited on channel {channel_id}, skipping this cycle.")
+            else:
+                print(f"Live update error: {e}")
         except Exception as e:
-            print(f"Failed to update live leaderboard: {e}")
+            print(f"Live update error: {e}")
 
 def create_leaderboard_embed(server, top_list):
     """Create the leaderboard embed."""
@@ -190,25 +219,26 @@ def create_leaderboard_embed(server, top_list):
     if server.get("last_spawn"):
         last = datetime.fromisoformat(server["last_spawn"])
         embed.set_footer(
-            text=f" Updates every 10s | Last spawn: {last.strftime('%H:%M:%S')}",
+            text=f" Updates every {LIVE_UPDATE_COOLDOWN}s | Last spawn: {last.strftime('%H:%M:%S')}",
             icon_url=bot.user.display_avatar.url
         )
     else:
-        embed.set_footer(text="🔄 Updates every 10 seconds", icon_url=bot.user.display_avatar.url)
+        embed.set_footer(text=f"🔄 Updates every {LIVE_UPDATE_COOLDOWN} seconds", icon_url=bot.user.display_avatar.url)
     
     return embed
 
-# --- Discord bot setup ---
+# --- Discord bot setup (using CustomBot) ---
 intents = discord.Intents.default()
 intents.message_content = True
 intents.guilds = True
-bot = commands.Bot(command_prefix=".", intents=intents)
+bot = CustomBot(command_prefix=".", intents=intents)
 
 @bot.event
 async def on_ready():
     sync_from_hub()
     print(f"✅ Spawn Tracker online as {bot.user.name}")
     print(f"🎯 Tracking {len(bot.guilds)} servers")
+    print(f"⚡ Gateway ratelimit bypass: ENABLED (CustomDiscordWebSocket)")
     live_updater.start()
 
 @bot.event
@@ -249,22 +279,55 @@ async def on_message(message):
 
     await bot.process_commands(message)
 
-@tasks.loop(seconds=10)
+@tasks.loop(seconds=LIVE_UPDATE_COOLDOWN)
 async def live_updater():
-    """Update all live leaderboards every 10 seconds."""
+    """Update all live leaderboards every LIVE_UPDATE_COOLDOWN seconds."""
+    current_time = time.time()
+    
     for guild_id, channels in live_messages.items():
         data, server = get_server_data(guild_id, "")
         top_list = get_top_10(server)
         embed = create_leaderboard_embed(server, top_list)
         
         for channel_id, message_id in channels.items():
+            # Respect cooldown
+            last_update = last_live_update.get(channel_id, 0)
+            if current_time - last_update < LIVE_UPDATE_COOLDOWN:
+                continue
+            
             try:
                 channel = bot.get_channel(channel_id)
                 if channel:
                     msg = await channel.fetch_message(message_id)
                     await msg.edit(embed=embed)
+                    last_live_update[channel_id] = current_time
+            except discord.errors.HTTPException as e:
+                if e.status == 429:
+                    print(f"⏱️ Rate limited on channel {channel_id}, skipping.")
+                else:
+                    print(f"Live update error: {e}")
             except Exception as e:
                 print(f"Live update error: {e}")
+
+@bot.command(name="pull")
+async def pull_from_hub(ctx):
+    """Force a sync from Hugging Face dataset (Developer only)."""
+    if ctx.author.id not in DEVELOPER_IDS:
+        return
+    
+    try:
+        path = hf_hub_download(
+            repo_id=DATASET_REPO,
+            filename=SPAWN_FILE,
+            repo_type="dataset",
+            token=HF_TOKEN
+        )
+        shutil.copy2(path, f"./{SPAWN_FILE}")
+        await ctx.send("✅ Data synced from Hugging Face Hub.")
+        print(f"✅ [HUB] Manually synced {SPAWN_FILE}")
+    except Exception as e:
+        await ctx.send(f"❌ Failed to sync: {e}")
+        print(f"❌ [HUB] Manual sync failed: {e}")
 
 @bot.command(name="top")
 async def show_top(ctx):
@@ -335,13 +398,16 @@ async def live_leaderboard(ctx):
     msg = await ctx.send(embed=embed)
     live_messages[ctx.guild.id][ctx.channel.id] = msg.id
     
-    await ctx.send(f"{EMOJI_LIVE} Live leaderboard started! Updates every 10 seconds. Type `.stop_live` to stop.")
+    await ctx.send(f"{EMOJI_LIVE} Live leaderboard started! Updates every {LIVE_UPDATE_COOLDOWN} seconds. Type `.stop_live` to stop.")
 
 @bot.command(name="stop_live")
 async def stop_live(ctx):
     """Stop the live leaderboard in this channel."""
     if ctx.guild.id in live_messages and ctx.channel.id in live_messages[ctx.guild.id]:
         del live_messages[ctx.guild.id][ctx.channel.id]
+        # Also remove cooldown entry
+        if ctx.channel.id in last_live_update:
+            del last_live_update[ctx.channel.id]
         await ctx.send(f"{EMOJI_SHIELD} Live leaderboard stopped in this channel.")
     else:
         await ctx.send("No live leaderboard running in this channel.")
