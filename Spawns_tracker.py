@@ -4,6 +4,7 @@ import os
 import json
 import re
 import asyncio
+import time  # <-- added for timestamps
 from datetime import datetime
 from huggingface_hub import HfApi, hf_hub_download
 import shutil
@@ -16,6 +17,9 @@ POKETWO_ID = 716390085896962058
 P2_ASSISTANT_IDS = [854233015475109888, 1459494731775217860, 1307910235737948252]
 POKENAME_BOT_ID = 874910942490677270
 DEVELOPER_IDS = [1378954077462986772]  # Only you can use .reset
+
+# Cooldown per channel to avoid duplicate recordings from multiple naming bots
+COOLDOWN_SECONDS = 3   # adjust as needed
 
 # Custom emojis (replace with your actual emoji IDs)
 EMOJI_SHIELD = "<:Role_Admin_White:1490432406988132352>"
@@ -33,6 +37,9 @@ MEDAL_3RD = "<a:720660medalbronze:1516152756325454036>"
 
 # Store live leaderboard messages for editing
 live_messages = {}
+
+# Per-channel cooldown tracking: (guild_id, channel_id) -> {pokemon_name: timestamp}
+last_spawn_per_channel = {}
 
 # --- HF functions ---
 hf_api = HfApi()
@@ -217,9 +224,29 @@ async def on_message(message):
     
     # Extract Pokémon name from message
     pokemon = extract_pokemon_name(message.content)
-    if pokemon:
-        record_spawn(message.guild.id, message.guild.name, pokemon)
-    
+    if not pokemon:
+        await bot.process_commands(message)
+        return
+
+    # --- PER-CHANNEL COOLDOWN CHECK ---
+    channel_key = (message.guild.id, message.channel.id)
+    current_time = time.time()
+
+    # Get the per-channel record for this channel
+    channel_data = last_spawn_per_channel.setdefault(channel_key, {})
+    last_time = channel_data.get(pokemon, 0)
+
+    if current_time - last_time < COOLDOWN_SECONDS:
+        # Same Pokémon recorded recently in this channel – skip duplicate
+        print(f"[{message.guild.name} #{message.channel.name}] Skipping duplicate {pokemon} (cooldown active)")
+        await bot.process_commands(message)
+        return
+
+    # Record the spawn
+    record_spawn(message.guild.id, message.guild.name, pokemon)
+    # Update the timestamp for this Pokémon in this channel
+    channel_data[pokemon] = current_time
+
     await bot.process_commands(message)
 
 @tasks.loop(seconds=10)
@@ -349,7 +376,7 @@ async def show_stats(ctx):
     
     embed.add_field(name=f"{EMOJI_SHIELD} Total Spawns", value=f"**{server['total_spawns']}**", inline=True)
     embed.add_field(name=f"{EMOJI_TROPHY} Unique Pokémon", value=f"**{unique_count}**", inline=True)
-    embed.add_field(name=f"🏆 Most Common", value=f"**{top_name}** ({top_count} times, {top_percentage:.1f}%)", inline=False)
+    embed.add_field(name=f" Most Common", value=f"**{top_name}** ({top_count} times, {top_percentage:.1f}%)", inline=False)
     
     if server.get("last_spawn"):
         last = datetime.fromisoformat(server["last_spawn"])
@@ -414,7 +441,7 @@ async def global_stats(ctx):
     
     if started:
         start_dt = datetime.fromisoformat(started)
-        embed.add_field(name="⏱️ Tracking Since", value=f"<t:{int(start_dt.timestamp())}:D>", inline=False)
+        embed.add_field(name=" Tracking Since", value=f"<t:{int(start_dt.timestamp())}:D>", inline=False)
     
     embed.set_footer(text="P2 Spawn Tracker", icon_url=bot.user.display_avatar.url)
     await ctx.send(embed=embed)
